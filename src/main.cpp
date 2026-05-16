@@ -214,6 +214,63 @@ void printBindings() {
     }
 }
 
+// 每位裁判在本轮的提交记录。
+// submitted：是否已经成功提交。
+// lastMsgId：最近一次被接受的 SUBMIT 帧的 msgId，用于 deviceId+roundId+msgId 去重。
+//   - 同一 msgId 的重复 SUBMIT → 回 OK_DUPLICATE。
+//   - 同一裁判同一轮的不同 msgId → 回 ERR_ALREADY_SUBMITTED（设计文档第 6 节规则）。
+// red/blue：被接受的本轮分数（0..99），供后续步骤 14 合分使用。
+struct PerJudgeSubmission {
+    bool submitted = false;
+    unsigned long lastMsgId = 0;
+    int red = 0;
+    int blue = 0;
+};
+
+// 当前轮号。从 1 开始，每次 next-round 命令递增。第一版只在内存里，重启会归 1。
+// NVS 持久化交给设计文档步骤 13。
+uint32_t currentRoundId = 1;
+
+// 当前轮是否仍在收分阶段。
+// 第一版即使 3 名裁判全部提交也不会自动置 false，因为合分/广播属于步骤 14；
+// 这里保持 true，仅为 STATUS 字段提供合理值。
+bool roundOpen = true;
+
+// 三个槽位的本轮提交记录，下标与 bindings[] 一一对应。
+PerJudgeSubmission roundSubmissions[BINDING_SLOT_COUNT];
+
+// 清空所有槽位的本轮提交记录。
+// 调用时机：next-round 命令；后续 reset 也会用到。
+void resetRoundSubmissions() {
+    for (uint8_t i = 0; i < BINDING_SLOT_COUNT; i++) {
+        roundSubmissions[i] = PerJudgeSubmission();
+    }
+}
+
+// 打印当前轮号、是否开放、以及三位裁判的提交状态。
+// 用于启动横幅、list 命令、每次 SUBMIT 处理后给操作员一份状态快照。
+void printRoundState() {
+    Serial.print("Round: ");
+    Serial.print(currentRoundId);
+    Serial.print("  open=");
+    Serial.println(roundOpen ? "true" : "false");
+    for (uint8_t i = 0; i < BINDING_SLOT_COUNT; i++) {
+        Serial.print("  ");
+        Serial.print(BINDING_SLOT_NAMES[i]);
+        Serial.print(": ");
+        if (!roundSubmissions[i].submitted) {
+            Serial.println("<pending>");
+        } else {
+            Serial.print("red=");
+            Serial.print(roundSubmissions[i].red);
+            Serial.print(" blue=");
+            Serial.print(roundSubmissions[i].blue);
+            Serial.print(" msgId=");
+            Serial.println(roundSubmissions[i].lastMsgId);
+        }
+    }
+}
+
 // 等待 E22 进入空闲状态再发送，避免在模块忙时数据被吞掉。
 // E22 的 AUX：HIGH=空闲可发送，LOW=正在收发或初始化。
 // 1 秒超时是兜底，防止 AUX 接线错误（悬空或始终被拉低）让程序永久卡死。
@@ -233,19 +290,26 @@ void sendLoraLine(const String& text) {
     Serial.print(text);
 }
 
-// 组装并发送一帧 STATUS，作为对裁判机 HELLO 的应答（联通测试用最小实现）。
+// 组装并发送一帧 STATUS，作为对裁判机 HELLO 的应答。
 // 帧格式：STATUS,deviceId,clientId,roundId,roundOpen,submitted,crc16。
 // deviceId：从收到的 HELLO 取来，原样回填，便于裁判机识别这是发给自己的应答。
-// clientId：裁判机当前自报的 ID（联通测试阶段通常是 "UNASSIGNED"）。
-// 其余 roundId/roundOpen/submitted 暂时硬编码为 "1"/"1"/"0"，等绑定与轮次逻辑接入后再换成真值。
+// clientId：裁判机当前自报的 ID（"UNASSIGNED" 或 "client1/2/3"）。
+// roundId / roundOpen 取自全局 currentRoundId / roundOpen；submitted 反映对应槽位本轮是否已提交。
+// 未绑定设备（clientId == "UNASSIGNED"）不属于任何槽位，submitted 始终回 0。
 void sendStatus(const String& deviceId, const String& clientId) {
+    int submitted = 0;
+    const int slot = bindingSlotIndex(clientId);
+    if (slot >= 0 && roundSubmissions[slot].submitted) {
+        submitted = 1;
+    }
+
     String fields[] = {
         "STATUS",
         deviceId,
         clientId,
-        "1",  // roundId
-        "1",  // roundOpen: 1=true
-        "0"   // submitted: 0=false
+        String(currentRoundId),
+        roundOpen ? "1" : "0",
+        submitted ? "1" : "0"
     };
 
     sendLoraLine(ScoreProtocol::buildFrame(fields, 6));
@@ -276,6 +340,29 @@ void sendUnbind(const String& deviceId) {
     sendLoraLine(ScoreProtocol::buildFrame(fields, 2));
 }
 
+// 组装并发送一帧 ACK，作为对 SUBMIT 的应答。
+// 帧格式：ACK,deviceId,clientId,roundId,msgId,status,crc16。
+// deviceId / clientId / roundId / msgId：均原样回填，让裁判机能精确匹配回到挂起的提交。
+// status：协议规定的结果码：
+//   OK                    - 首次接受，已记录分数
+//   OK_DUPLICATE          - 相同 deviceId+roundId+msgId 已见过，幂等再 ACK，不重复计分
+//   ERR_ALREADY_SUBMITTED - 同一裁判同一轮已用不同 msgId 提交过，新提交被拒
+//   ERR_BAD_ROUND         - roundId 与服务端当前轮不一致
+// 裁判机端把前三种都视为"已被服务端确认"进入 LOCKED；ERR_BAD_ROUND 则给操作员错误反馈。
+void sendAck(const String& deviceId, const String& clientId,
+             const String& roundIdText, const String& msgIdText,
+             const char* status) {
+    String fields[] = {
+        "ACK",
+        deviceId,
+        clientId,
+        roundIdText,
+        msgIdText,
+        String(status)
+    };
+    sendLoraLine(ScoreProtocol::buildFrame(fields, 6));
+}
+
 // 把已成功解析的协议帧打印到调试串口，便于联通测试时观察字段内容。
 // frame：parseFrame 返回 true 时填好的结构体。
 void printParsedFrame(const ScoreProtocol::ParsedFrame& frame) {
@@ -302,29 +389,29 @@ void printParsedFrame(const ScoreProtocol::ParsedFrame& frame) {
 //       不匹配（槽位未绑定，或绑给了别的 deviceId）→ 打日志，并向该设备回发一帧 UNBIND
 //         以纠正客户端本地的过期 NVS。这同时也是 UNBIND 丢包的隐式重传机制：
 //         只要客户端还冒充错误的 clientId，每次 HELLO 都会触发一次新的 UNBIND，迟早会送达。
-void handleHello(const ScoreProtocol::ParsedFrame& frame) {
-    if (frame.fieldCount != 4) {
-        Serial.println("HELLO: bad field count, ignored");
-        return;
-    }
-
-    const String& helloDeviceId = frame.fields[1];
-    const String& helloClientId = frame.fields[2];
-    const String& battText = frame.fields[3];
-
-    if (helloClientId == "UNASSIGNED") {
+// 处理一台裁判机刚刚自报存在的信号——HELLO 或 HEARTBEAT 共用的核心逻辑。
+// deviceId / clientId / battText：来自帧字段；frameLabel 用于日志区分（"HELLO" / "HEARTBEAT"）。
+// 行为（与 handleHello/handleHeartbeat 调用方共享）：
+//   - 自报 UNASSIGNED 但服务端有该 deviceId 的绑定记录 → 重发 ASSIGN（隐式重传）。
+//   - 自报 UNASSIGNED 且服务端也没绑定 → 解析电池电压，登记/刷新未绑定表，回 STATUS。
+//   - 自报 client1/2/3 但与绑定表不一致或槽位不存在 → 重发 UNBIND 纠正客户端。
+//   - 自报与绑定表一致 → 回 STATUS。
+// 抽成独立函数避免 HEARTBEAT 实现时再写一遍同样的自愈逻辑。
+void respondToPresence(const String& deviceId, const String& clientId,
+                       const String& battText, const char* frameLabel) {
+    if (clientId == "UNASSIGNED") {
         // 一种特殊情况：客户端自报 UNASSIGNED，但服务端记录里这个 deviceId 已经绑到了某 clientX。
         // 说明之前发出的 ASSIGN 在空中丢了，客户端从未真正绑定成功。
         // 服务端必须再发一遍 ASSIGN，否则两边状态会永远分裂（服务端以为绑了，客户端不知道）。
-        // 这是 ASSIGN 的隐式重传机制，与 handleHello 中 clientX 不匹配时发 UNBIND 对称。
-        const int existingSlot = findBindingByDevice(helloDeviceId);
+        const int existingSlot = findBindingByDevice(deviceId);
         if (existingSlot >= 0) {
-            Serial.print("HELLO: ");
-            Serial.print(helloDeviceId);
+            Serial.print(frameLabel);
+            Serial.print(": ");
+            Serial.print(deviceId);
             Serial.print(" claims UNASSIGNED but server has it bound to ");
             Serial.print(BINDING_SLOT_NAMES[existingSlot]);
             Serial.println(", resending ASSIGN");
-            sendAssign(helloDeviceId, BINDING_SLOT_NAMES[existingSlot]);
+            sendAssign(deviceId, BINDING_SLOT_NAMES[existingSlot]);
             return;
         }
 
@@ -336,40 +423,184 @@ void handleHello(const ScoreProtocol::ParsedFrame& frame) {
             battMv = static_cast<int>(parsedBatt);
         }
 
-        if (!upsertUnboundDevice(helloDeviceId, battMv)) {
+        if (!upsertUnboundDevice(deviceId, battMv)) {
             Serial.print("Unbound table full, dropped: ");
-            Serial.println(helloDeviceId);
+            Serial.println(deviceId);
         } else {
             printUnboundDevices();
         }
-        sendStatus(helloDeviceId, helloClientId);
+        sendStatus(deviceId, clientId);
         return;
     }
 
     // 自报为 client1/2/3 的设备：必须与绑定表一致才正常回应。
-    const int slot = bindingSlotIndex(helloClientId);
+    const int slot = bindingSlotIndex(clientId);
     if (slot < 0) {
-        Serial.print("HELLO: unknown clientId '");
-        Serial.print(helloClientId);
+        Serial.print(frameLabel);
+        Serial.print(": unknown clientId '");
+        Serial.print(clientId);
         Serial.println("', sending UNBIND to correct");
-        sendUnbind(helloDeviceId);
+        sendUnbind(deviceId);
         return;
     }
 
-    if (bindings[slot] != helloDeviceId) {
-        Serial.print("HELLO: ");
-        Serial.print(helloDeviceId);
+    if (bindings[slot] != deviceId) {
+        Serial.print(frameLabel);
+        Serial.print(": ");
+        Serial.print(deviceId);
         Serial.print(" claims ");
-        Serial.print(helloClientId);
+        Serial.print(clientId);
         Serial.print(" but server has '");
         Serial.print(bindings[slot]);
         Serial.println("', sending UNBIND to correct");
-        sendUnbind(helloDeviceId);
+        sendUnbind(deviceId);
         return;
     }
 
     // 绑定一致，按业务正常处理。
-    sendStatus(helloDeviceId, helloClientId);
+    sendStatus(deviceId, clientId);
+}
+
+// 处理一帧 HELLO。
+// 帧格式：HELLO,deviceId,clientId,battMv,crc16，fieldCount 必须为 4。
+// HELLO 语义：客户端"我来了"的一次性自报，通常在上电或重连时发，频率低。
+// 后续保活由 HEARTBEAT 承担。
+void handleHello(const ScoreProtocol::ParsedFrame& frame) {
+    if (frame.fieldCount != 4) {
+        Serial.println("HELLO: bad field count, ignored");
+        return;
+    }
+    respondToPresence(frame.fields[1], frame.fields[2], frame.fields[3], "HELLO");
+}
+
+// 处理一帧 HEARTBEAT。
+// 帧格式：HEARTBEAT,deviceId,clientId,battMv,msgId,crc16，fieldCount 必须为 5。
+// HEARTBEAT 语义：周期性保活（设计文档第 9 节：未提交 10s 一次，已锁定 15s 一次）。
+// 第一版服务端对 HEARTBEAT 与 HELLO 同等处理，回 STATUS 帮客户端同步轮次状态；
+// 等步骤 14 引入 STATUS,ALL 广播后，服务端可以改为 HEARTBEAT 只更新最近活跃时间、不回 STATUS。
+// msgId 字段当前只用于日志，服务端不维护 HEARTBEAT 的 msgId 去重。
+void handleHeartbeat(const ScoreProtocol::ParsedFrame& frame) {
+    if (frame.fieldCount != 5) {
+        Serial.println("HEARTBEAT: bad field count, ignored");
+        return;
+    }
+    respondToPresence(frame.fields[1], frame.fields[2], frame.fields[3], "HEARTBEAT");
+}
+
+// 处理一帧 SUBMIT。
+// 帧格式：SUBMIT,deviceId,clientId,roundId,msgId,red,blue,battMv,crc16，fieldCount 必须为 8。
+// 流程（设计文档第 6/8 节）：
+//   1) 字段数错 / 字段非法 → 丢弃，不回 ACK（让客户端按超时重传）。
+//   2) clientId 非法 → 不回 ACK，并发 UNBIND 纠正客户端本地状态。
+//   3) clientId 合法但绑定不匹配 → 同上，发 UNBIND 纠正。
+//   4) red/blue 越界 0..99 → 丢弃。
+//   5) roundId != currentRoundId → ACK ERR_BAD_ROUND。
+//   6) 已记录过相同 msgId → ACK OK_DUPLICATE（幂等，不重复计分）。
+//   7) 本轮已用不同 msgId 提交过 → ACK ERR_ALREADY_SUBMITTED。
+//   8) 全部通过 → 写入 roundSubmissions[slot]、ACK OK、打印轮次状态。
+// 注意：每个槽位独立去重，不影响其他裁判。
+void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
+    if (frame.fieldCount != 8) {
+        Serial.println("SUBMIT: bad field count, ignored");
+        return;
+    }
+
+    const String& subDevice = frame.fields[1];
+    const String& subClient = frame.fields[2];
+    const String& subRoundText = frame.fields[3];
+    const String& subMsgText = frame.fields[4];
+    const String& subRedText = frame.fields[5];
+    const String& subBlueText = frame.fields[6];
+    // frame.fields[7] 是 battMv，本步骤暂不使用（步骤 10 接 ADC 后会用作裁判电量上报）。
+
+    // ===== 绑定校验 =====
+    const int slot = bindingSlotIndex(subClient);
+    if (slot < 0) {
+        Serial.print("SUBMIT: unknown clientId '");
+        Serial.print(subClient);
+        Serial.println("', sending UNBIND to correct");
+        sendUnbind(subDevice);
+        return;
+    }
+    if (bindings[slot] != subDevice) {
+        Serial.print("SUBMIT: ");
+        Serial.print(subDevice);
+        Serial.print(" claims ");
+        Serial.print(subClient);
+        Serial.print(" but server has '");
+        Serial.print(bindings[slot]);
+        Serial.println("', sending UNBIND to correct");
+        sendUnbind(subDevice);
+        return;
+    }
+
+    // ===== 字段解析 =====
+    unsigned long subRound = 0;
+    if (!ScoreProtocol::parseUnsignedLong(subRoundText, subRound)) {
+        Serial.println("SUBMIT: bad roundId, ignored");
+        return;
+    }
+    unsigned long subMsgId = 0;
+    if (!ScoreProtocol::parseUnsignedLong(subMsgText, subMsgId)) {
+        Serial.println("SUBMIT: bad msgId, ignored");
+        return;
+    }
+    int red = 0;
+    int blue = 0;
+    if (!ScoreProtocol::parseIntInRange(subRedText, 0, 99, red) ||
+        !ScoreProtocol::parseIntInRange(subBlueText, 0, 99, blue)) {
+        Serial.println("SUBMIT: bad red/blue, ignored");
+        return;
+    }
+
+    // ===== 轮号校验 =====
+    if (subRound != currentRoundId) {
+        Serial.print("SUBMIT: roundId ");
+        Serial.print(subRound);
+        Serial.print(" != current ");
+        Serial.println(currentRoundId);
+        sendAck(subDevice, subClient, subRoundText, subMsgText, "ERR_BAD_ROUND");
+        return;
+    }
+
+    // ===== 去重 =====
+    PerJudgeSubmission& s = roundSubmissions[slot];
+    if (s.submitted && s.lastMsgId == subMsgId) {
+        // 完全相同的重复提交（ACK 在空中丢了导致客户端重传），幂等 ACK 即可。
+        Serial.print("SUBMIT: duplicate msgId=");
+        Serial.print(subMsgId);
+        Serial.println(", ack only");
+        sendAck(subDevice, subClient, subRoundText, subMsgText, "OK_DUPLICATE");
+        return;
+    }
+    if (s.submitted) {
+        // 同一轮换了新 msgId 想再提一次（裁判想改分？）。设计文档规定本轮一旦提交即锁定。
+        Serial.print("SUBMIT: ");
+        Serial.print(subClient);
+        Serial.println(" already submitted this round");
+        sendAck(subDevice, subClient, subRoundText, subMsgText, "ERR_ALREADY_SUBMITTED");
+        return;
+    }
+
+    // ===== 接受新提交 =====
+    s.submitted = true;
+    s.lastMsgId = subMsgId;
+    s.red = red;
+    s.blue = blue;
+
+    Serial.print("SUBMIT accepted: ");
+    Serial.print(subClient);
+    Serial.print(" round=");
+    Serial.print(subRound);
+    Serial.print(" msgId=");
+    Serial.print(subMsgId);
+    Serial.print(" red=");
+    Serial.print(red);
+    Serial.print(" blue=");
+    Serial.println(blue);
+
+    sendAck(subDevice, subClient, subRoundText, subMsgText, "OK");
+    printRoundState();
 }
 
 // 处理一帧 ASSIGN_ACK。
@@ -420,6 +651,12 @@ void handleLoraInput() {
                         case ScoreProtocol::MessageType::Hello:
                             handleHello(frame);
                             break;
+                        case ScoreProtocol::MessageType::Heartbeat:
+                            handleHeartbeat(frame);
+                            break;
+                        case ScoreProtocol::MessageType::Submit:
+                            handleSubmit(frame);
+                            break;
                         case ScoreProtocol::MessageType::AssignAck:
                             handleAssignAck(frame);
                             break;
@@ -427,7 +664,7 @@ void handleLoraInput() {
                             handleUnbindAck(frame);
                             break;
                         default:
-                            // HEARTBEAT/SUBMIT 等后续步骤再接入，第一版忽略。
+                            // 其他类型当前没有业务处理。
                             break;
                     }
                 } else {
@@ -582,10 +819,23 @@ void handleUnbindCommand(const String args[], uint8_t argc) {
     printBindings();
 }
 
-// 处理 "list" 命令：把绑定表和未绑定设备表一起打印。
+// 处理 "list" 命令：把绑定表、未绑定设备表和当前轮次状态一起打印。
 void handleListCommand() {
     printBindings();
     printUnboundDevices();
+    printRoundState();
+}
+
+// 处理 "next-round" 命令：把 currentRoundId 加一，清空本轮提交记录。
+// 这是为步骤 7 联调准备的最小实现，未做"必须本轮完成才允许下一轮"的限制，
+// 也未做累计总分（属于步骤 14）。客户端在收到下一帧 STATUS 携带的新 roundId 后
+// 会自动解锁（lockedRoundId 不再匹配 currentServerRoundId）。
+void handleNextRoundCommand() {
+    currentRoundId++;
+    resetRoundSubmissions();
+    Serial.print("next-round: advanced to ");
+    Serial.println(currentRoundId);
+    printRoundState();
 }
 
 // 从 Serial（调试串口）按字节读入命令行，遇到 '\r' 或 '\n' 视为一行结束并解析。
@@ -632,10 +882,12 @@ void handleSerialCommand() {
                 handleUnbindCommand(&tokens[1], static_cast<uint8_t>(n - 1));
             } else if (tokens[0] == "list") {
                 handleListCommand();
+            } else if (tokens[0] == "next-round") {
+                handleNextRoundCommand();
             } else {
                 Serial.print("Unknown command: ");
                 Serial.println(tokens[0]);
-                Serial.println("Available: bind / unbind / list");
+                Serial.println("Available: bind / unbind / list / next-round");
             }
 
             continue;
@@ -667,6 +919,7 @@ void setup() {
     Serial.print("Millis: ");
     Serial.println(millis());
     printBindings();
+    printRoundState();
 
     pinMode(LORA_M0_PIN, OUTPUT);
     pinMode(LORA_M1_PIN, OUTPUT);
@@ -680,7 +933,7 @@ void setup() {
     delay(500);
 
     Serial.println("E22 UART transparent ready");
-    Serial.println("Serial commands: bind <deviceId> client1|2|3 / unbind clientX / list");
+    Serial.println("Serial commands: bind <deviceId> client1|2|3 / unbind clientX / list / next-round");
 }
 
 // Arduino 主循环，会被反复调用。
