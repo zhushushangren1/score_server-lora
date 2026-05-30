@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <ScoreProtocol.h>
-#include <TM1637Display.h>
 
 // 服务端 E22-400T22D 串口接线（与裁判端一致，改到 ESP32-S3 DevKitC 右侧连续排针）：
 // ESP32-S3 GPIO41 TX -> E22 RXD
@@ -18,17 +17,6 @@ constexpr int LORA_AUX_PIN = 42;
 constexpr int LORA_M0_PIN = 38;
 constexpr int LORA_M1_PIN = 39;
 constexpr uint32_t LORA_UART_BAUD = 9600;
-
-// TM1637 数码管接线（与裁判端一致）：CLK -> GPIO48，DIO -> GPIO47。
-// 避开 GPIO35~GPIO37：N16R8 等带 OPI PSRAM 的板卡用这三个脚连八线 PSRAM，不能复用。
-// 服务端用它来显示当前比赛进度："轮号.已提交数" 例如 "01.00" / "02.03"。
-constexpr int TM1637_CLK_PIN = 48;
-constexpr int TM1637_DIO_PIN = 47;
-TM1637Display display(TM1637_CLK_PIN, TM1637_DIO_PIN);
-
-// 显示状态最低刷新间隔。状态变化点会主动调 updateDisplay，这里只是兜底。
-constexpr unsigned long DISPLAY_REFRESH_INTERVAL_MS = 200;
-unsigned long lastDisplayRefreshMs = 0;
 
 // LoRa 接收行缓冲，handleLoraInput 按字节追加，遇到 '\n' 即视为一帧结束。
 String loraLine;
@@ -281,28 +269,6 @@ void printRoundState() {
             Serial.println(roundSubmissions[i].lastMsgId);
         }
     }
-}
-
-// 统计本轮已经提交的裁判数。0..BINDING_SLOT_COUNT。
-// 用于在数码管上显示提交进度，让操作员一眼能看出还差几个人。
-uint8_t countSubmittedJudges() {
-    uint8_t n = 0;
-    for (uint8_t i = 0; i < BINDING_SLOT_COUNT; i++) {
-        if (roundSubmissions[i].submitted) {
-            n++;
-        }
-    }
-    return n;
-}
-
-// 把当前轮号与已提交人数显示到 TM1637。
-// 格式 "RR.NN"：左两位 = currentRoundId（钳到 0..99 显示），右两位 = 已提交人数。
-// 与裁判端的 "red.blue" 显示形式对称，操作员视觉上容易区分。
-// 由 setup / handleSubmit / handleNextRoundCommand 等状态变化点主动调用，loop 也兜底周期刷新。
-void updateDisplay() {
-    lastDisplayRefreshMs = millis();
-    const int round = currentRoundId > 99 ? 99 : static_cast<int>(currentRoundId);
-    display.showScore(round, countSubmittedJudges());
 }
 
 // 等待 E22 进入空闲状态再发送，避免在模块忙时数据被吞掉。
@@ -635,7 +601,6 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
 
     sendAck(subDevice, subClient, subRoundText, subMsgText, "OK");
     printRoundState();
-    updateDisplay();
 }
 
 // 处理一帧 ASSIGN_ACK。
@@ -878,7 +843,6 @@ void handleNextRoundCommand() {
     }
 
     printRoundState();
-    updateDisplay();
 }
 
 // 从 Serial（调试串口）按字节读入命令行，遇到 '\r' 或 '\n' 视为一行结束并解析。
@@ -975,22 +939,13 @@ void setup() {
     Serial1.begin(LORA_UART_BAUD, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
     delay(500);
 
-    // 初始化数码管：满亮度并按当前轮次状态刷一次。
-    display.setBrightness(7);
-    display.clear();
-    updateDisplay();
-
     Serial.println("E22 UART transparent ready");
     Serial.println("Serial commands: bind <deviceId> client1|2|3 / unbind clientX / list / next-round");
 }
 
 // Arduino 主循环，会被反复调用。
-// 服务端做三件事：消化 LoRa 收到的数据，处理操作员从串口敲入的命令，按周期兜底刷新数码管。
+// 服务端做两件事：消化 LoRa 收到的数据，处理操作员从串口敲入的命令。
 void loop() {
     handleLoraInput();
     handleSerialCommand();
-
-    if (millis() - lastDisplayRefreshMs >= DISPLAY_REFRESH_INTERVAL_MS) {
-        updateDisplay();
-    }
 }
