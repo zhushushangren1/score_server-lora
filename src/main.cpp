@@ -3,26 +3,27 @@
 #include <ScoreProtocol.h>
 #include <TM1637Display.h>
 
-// 服务端 E22-400T22D 串口接线：
-// ESP32-S3 GPIO17 TX -> E22 RXD
-// ESP32-S3 GPIO18 RX <- E22 TXD
-// ESP32-S3 GPIO11     <- E22 AUX
-// ESP32-S3 GPIO12     -> E22 M0
-// ESP32-S3 GPIO13     -> E22 M1
+// 服务端 E22-400T22D 串口接线（与裁判端一致，改到 ESP32-S3 DevKitC 右侧连续排针）：
+// ESP32-S3 GPIO41 TX -> E22 RXD
+// ESP32-S3 GPIO40 RX <- E22 TXD
+// ESP32-S3 GPIO42     <- E22 AUX
+// ESP32-S3 GPIO38     -> E22 M0
+// ESP32-S3 GPIO39     -> E22 M1
 //
 // M0=LOW 且 M1=LOW 时，E22 进入普通透明传输模式。
 // E22 模块出厂串口波特率通常是 9600。
-constexpr int LORA_TX_PIN = 17;
-constexpr int LORA_RX_PIN = 18;
-constexpr int LORA_AUX_PIN = 11;
-constexpr int LORA_M0_PIN = 12;
-constexpr int LORA_M1_PIN = 13;
+constexpr int LORA_TX_PIN = 41;
+constexpr int LORA_RX_PIN = 40;
+constexpr int LORA_AUX_PIN = 42;
+constexpr int LORA_M0_PIN = 38;
+constexpr int LORA_M1_PIN = 39;
 constexpr uint32_t LORA_UART_BAUD = 9600;
 
-// TM1637 数码管接线（与裁判端一致）：CLK -> GPIO9，DIO -> GPIO10。
+// TM1637 数码管接线（与裁判端一致）：CLK -> GPIO48，DIO -> GPIO47。
+// 避开 GPIO35~GPIO37：N16R8 等带 OPI PSRAM 的板卡用这三个脚连八线 PSRAM，不能复用。
 // 服务端用它来显示当前比赛进度："轮号.已提交数" 例如 "01.00" / "02.03"。
-constexpr int TM1637_CLK_PIN = 9;
-constexpr int TM1637_DIO_PIN = 10;
+constexpr int TM1637_CLK_PIN = 48;
+constexpr int TM1637_DIO_PIN = 47;
 TM1637Display display(TM1637_CLK_PIN, TM1637_DIO_PIN);
 
 // 显示状态最低刷新间隔。状态变化点会主动调 updateDisplay，这里只是兜底。
