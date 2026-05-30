@@ -21,6 +21,76 @@ constexpr uint32_t LORA_UART_BAUD = 9600;
 // LoRa 接收行缓冲，handleLoraInput 按字节追加，遇到 '\n' 即视为一帧结束。
 String loraLine;
 
+// ===== 状态 LED 与实体按键（设计文档 5.3 / 5.4 节，引脚按本机实际接线）=====
+
+// 4 个状态 LED，均为高电平点亮（GPIO -> 1K 限流电阻 -> LED 正极，LED 负极 -> GND）。
+// ⚠ LED_POWER 用了 GPIO45：它是 ESP32-S3 的 strapping 脚（VDD_SPI 电压选择），复位瞬间必须为低 = 3.3V flash。
+//   这里是"高电平点亮"：开机时引脚被内部下拉 + LED 到 GND 一起拉低，正好为低，故可用。
+//   切勿改成"低电平点亮"（LED 接到 3V3），否则复位时把 VDD_SPI 拉成 1.8V 会导致无法启动。
+constexpr int LED_POWER_PIN = 45;  // 电源灯：上电常亮
+constexpr int LED_WORK_PIN  = 48;  // 工作灯：心跳慢闪，表示固件在运行
+constexpr int LED_TX_PIN    = 47;  // LoRa 发送指示：每发一帧闪一下
+constexpr int LED_RX_PIN    = 21;  // LoRa 接收指示：每收到一帧闪一下
+
+// 工作灯心跳周期：每隔这么久翻转一次电平（1Hz 慢闪）。
+constexpr unsigned long WORK_BLINK_INTERVAL_MS = 500;
+// TX/RX 指示灯单次点亮时长：触发后亮这么久再灭，形成可见的一闪。
+constexpr unsigned long LED_PULSE_MS = 60;
+
+unsigned long lastWorkBlinkMs = 0;
+bool workLedOn = false;
+unsigned long txLedOffMs = 0;  // 非 0 表示 TX 灯亮着、到点该灭
+unsigned long rxLedOffMs = 0;  // 非 0 表示 RX 灯亮着、到点该灭
+
+// 2 个实体按键（设计文档 5.3 节），INPUT_PULLUP，按下为 LOW：
+//   下一轮：GPIO4，短按（去抖后的按下沿）触发。
+//   重置：  GPIO5，长按 3 秒触发。
+constexpr int BUTTON_NEXT_PIN  = 4;
+constexpr int BUTTON_RESET_PIN = 5;
+constexpr unsigned long BUTTON_DEBOUNCE_MS = 20;
+constexpr unsigned long BUTTON_RESET_LONG_PRESS_MS = 3000;
+
+// 单个按键的去抖与长按状态（与裁判端 pollButtons 同一套思路）。
+struct ButtonState {
+    bool stableLevel = true;        // 去抖后的稳定电平：true=HIGH=松开
+    bool lastRawLevel = true;
+    unsigned long lastRawChangeMs = 0;
+    unsigned long pressedAtMs = 0;
+    bool longFired = false;
+};
+ButtonState nextButton;
+ButtonState resetButton;
+
+// 点亮 TX 指示灯并安排 LED_PULSE_MS 后熄灭（在 sendLoraLine 中调用）。
+void pulseTxLed() {
+    digitalWrite(LED_TX_PIN, HIGH);
+    txLedOffMs = millis() + LED_PULSE_MS;
+}
+
+// 点亮 RX 指示灯并安排 LED_PULSE_MS 后熄灭（收到完整一帧时调用）。
+void pulseRxLed() {
+    digitalWrite(LED_RX_PIN, HIGH);
+    rxLedOffMs = millis() + LED_PULSE_MS;
+}
+
+// 在 loop 中驱动 LED：工作灯心跳翻转，TX/RX 脉冲到期熄灭（非阻塞）。
+void updateLeds() {
+    const unsigned long now = millis();
+    if (now - lastWorkBlinkMs >= WORK_BLINK_INTERVAL_MS) {
+        lastWorkBlinkMs = now;
+        workLedOn = !workLedOn;
+        digitalWrite(LED_WORK_PIN, workLedOn ? HIGH : LOW);
+    }
+    if (txLedOffMs != 0 && static_cast<long>(now - txLedOffMs) >= 0) {
+        digitalWrite(LED_TX_PIN, LOW);
+        txLedOffMs = 0;
+    }
+    if (rxLedOffMs != 0 && static_cast<long>(now - rxLedOffMs) >= 0) {
+        digitalWrite(LED_RX_PIN, LOW);
+        rxLedOffMs = 0;
+    }
+}
+
 // 未绑定设备列表上限。
 // 第一版业务最多 3 台裁判机，外加几台不属于本场比赛的同频设备，6 个槽位足够。
 // 设计成定长数组而非动态容器：避免 String 的堆碎片，行为可预测。
@@ -284,6 +354,7 @@ void waitForLoraReady() {
 // 通过 Serial1 把一行已组好的协议数据写到 E22 进行无线发送，并在调试串口回显。
 // text：已经包含 CRC 和末尾 '\n' 的完整协议行（通常来自 ScoreProtocol::buildFrame）。
 void sendLoraLine(const String& text) {
+    pulseTxLed();
     waitForLoraReady();
     Serial1.print(text);
     Serial.print("LoRa TX: ");
@@ -640,6 +711,7 @@ void handleLoraInput() {
 
         if (c == '\n') {
             if (loraLine.length() > 0) {
+                pulseRxLed();
                 Serial.print("LoRa RX: ");
                 Serial.println(loraLine);
 
@@ -845,6 +917,73 @@ void handleNextRoundCommand() {
     printRoundState();
 }
 
+// 处理 "reset" 命令 / 重置按键长按 3 秒：把比赛状态清回初始值。
+// 第一版没有累计总分（属于步骤 14），所以这里把轮号清回 1、清空本轮提交、roundOpen=true，
+// 并给已绑定裁判机各发一帧 STATUS 让它们回到第 1 轮。步骤 14 接入总分后，在这里一并清零总分。
+// 注意：不动设备绑定关系（重置的是比分，不是绑定）。
+void handleResetCommand() {
+    currentRoundId = 1;
+    roundOpen = true;
+    resetRoundSubmissions();
+    Serial.println("reset: match state cleared (roundId=1)");
+
+    for (uint8_t i = 0; i < BINDING_SLOT_COUNT; i++) {
+        if (bindings[i].length() > 0) {
+            sendStatus(bindings[i], BINDING_SLOT_NAMES[i]);
+        }
+    }
+
+    printRoundState();
+}
+
+// 扫描 2 个实体按键并分发动作（在 loop 中每轮调用，非阻塞）。
+// 下一轮（GPIO4）：去抖后的按下沿触发一次 handleNextRoundCommand。
+// 重置（GPIO5）：持续按下达到 BUTTON_RESET_LONG_PRESS_MS（3s）触发一次 handleResetCommand；
+//   longFired 标记保证一次长按只触发一次，必须松手后才能再次触发。
+void pollServerButtons() {
+    const unsigned long now = millis();
+
+    // 下一轮：短按（去抖后的按下沿）触发。
+    {
+        ButtonState& b = nextButton;
+        const bool raw = digitalRead(BUTTON_NEXT_PIN) != LOW;
+        if (raw != b.lastRawLevel) {
+            b.lastRawLevel = raw;
+            b.lastRawChangeMs = now;
+        }
+        if (now - b.lastRawChangeMs >= BUTTON_DEBOUNCE_MS && raw != b.stableLevel) {
+            b.stableLevel = raw;
+            if (!raw) {  // 按下沿
+                Serial.println("BUTTON: next-round");
+                handleNextRoundCommand();
+            }
+        }
+    }
+
+    // 重置：长按 3 秒触发。
+    {
+        ButtonState& b = resetButton;
+        const bool raw = digitalRead(BUTTON_RESET_PIN) != LOW;
+        if (raw != b.lastRawLevel) {
+            b.lastRawLevel = raw;
+            b.lastRawChangeMs = now;
+        }
+        if (now - b.lastRawChangeMs >= BUTTON_DEBOUNCE_MS && raw != b.stableLevel) {
+            b.stableLevel = raw;
+            if (!raw) {  // 按下沿：开始长按计时
+                b.pressedAtMs = now;
+                b.longFired = false;
+            }
+        }
+        if (!b.stableLevel && !b.longFired &&
+            now - b.pressedAtMs >= BUTTON_RESET_LONG_PRESS_MS) {
+            b.longFired = true;
+            Serial.println("BUTTON: reset (long press 3s)");
+            handleResetCommand();
+        }
+    }
+}
+
 // 从 Serial（调试串口）按字节读入命令行，遇到 '\r' 或 '\n' 视为一行结束并解析。
 // 命令格式：
 //   bind <deviceId> client1|client2|client3
@@ -891,10 +1030,12 @@ void handleSerialCommand() {
                 handleListCommand();
             } else if (tokens[0] == "next-round") {
                 handleNextRoundCommand();
+            } else if (tokens[0] == "reset") {
+                handleResetCommand();
             } else {
                 Serial.print("Unknown command: ");
                 Serial.println(tokens[0]);
-                Serial.println("Available: bind / unbind / list / next-round");
+                Serial.println("Available: bind / unbind / list / next-round / reset");
             }
 
             continue;
@@ -936,16 +1077,33 @@ void setup() {
     digitalWrite(LORA_M0_PIN, LOW);
     digitalWrite(LORA_M1_PIN, LOW);
 
+    // 状态 LED：全部输出。电源灯上电常亮，其余先熄灭（工作灯随后由 loop 心跳驱动）。
+    pinMode(LED_POWER_PIN, OUTPUT);
+    pinMode(LED_WORK_PIN, OUTPUT);
+    pinMode(LED_TX_PIN, OUTPUT);
+    pinMode(LED_RX_PIN, OUTPUT);
+    digitalWrite(LED_POWER_PIN, HIGH);
+    digitalWrite(LED_WORK_PIN, LOW);
+    digitalWrite(LED_TX_PIN, LOW);
+    digitalWrite(LED_RX_PIN, LOW);
+
+    // 2 个实体按键：INPUT_PULLUP，按下为 LOW（设计文档 5.3 节）。
+    pinMode(BUTTON_NEXT_PIN, INPUT_PULLUP);
+    pinMode(BUTTON_RESET_PIN, INPUT_PULLUP);
+
     Serial1.begin(LORA_UART_BAUD, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
     delay(500);
 
     Serial.println("E22 UART transparent ready");
-    Serial.println("Serial commands: bind <deviceId> client1|2|3 / unbind clientX / list / next-round");
+    Serial.println("Serial commands: bind <deviceId> client1|2|3 / unbind clientX / list / next-round / reset");
+    Serial.println("Buttons: GPIO4 short = next-round, GPIO5 hold 3s = reset");
 }
 
 // Arduino 主循环，会被反复调用。
-// 服务端做两件事：消化 LoRa 收到的数据，处理操作员从串口敲入的命令。
+// 服务端做这些事：消化 LoRa 收到的数据、处理串口命令、扫描实体按键、驱动状态 LED。
 void loop() {
     handleLoraInput();
     handleSerialCommand();
+    pollServerButtons();
+    updateLeds();
 }
