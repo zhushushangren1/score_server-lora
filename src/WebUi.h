@@ -1,3 +1,5 @@
+// 服务端 Web 页面数据模型和回调接口。
+// 定义 WebUi 渲染需要的状态快照，以及网页动作回调函数集合。
 #pragma once
 
 #include <Arduino.h>

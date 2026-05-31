@@ -1,3 +1,5 @@
+// 服务端 LoRa 入站协议处理实现。
+// 负责处理裁判端发来的 HELLO、HEARTBEAT、SUBMIT、ASSIGN_ACK、UNBIND_ACK。
 #include "ProtocolHandlers.h"
 
 #include <Arduino.h>

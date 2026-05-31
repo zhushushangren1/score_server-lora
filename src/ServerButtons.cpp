@@ -1,3 +1,5 @@
+// 服务端实体按钮模块实现。
+// 负责 GPIO5 下一轮按钮和 GPIO12 长按重置按钮的初始化、去抖和事件触发。
 #include "ServerButtons.h"
 
 #include <Arduino.h>
@@ -6,8 +8,8 @@
 
 namespace {
 
-constexpr int BUTTON_NEXT_PIN = 4;
-constexpr int BUTTON_RESET_PIN = 5;
+constexpr int BUTTON_NEXT_PIN = 5;
+constexpr int BUTTON_RESET_PIN = 12;
 constexpr unsigned long BUTTON_DEBOUNCE_MS = 20;
 constexpr unsigned long BUTTON_RESET_LONG_PRESS_MS = 3000;
 

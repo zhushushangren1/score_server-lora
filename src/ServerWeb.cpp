@@ -1,3 +1,5 @@
+// 服务端 Web 适配层实现。
+// 负责把 ServerState 转换为 WebUiState，并把网页按钮动作接回 ServerActions。
 #include "ServerWeb.h"
 
 #include <Arduino.h>

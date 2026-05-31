@@ -1,3 +1,5 @@
+// 服务端业务动作实现。
+// 负责绑定、解绑、查看状态、进入下一轮、重置比分等可由串口/网页/按钮复用的动作。
 #include "ServerActions.h"
 
 #include "LoraLink.h"

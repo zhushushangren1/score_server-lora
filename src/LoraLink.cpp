@@ -1,3 +1,5 @@
+// 服务端 LoRa UART 链路模块实现。
+// 负责 E22 透传串口初始化、按行收发协议帧，并构造 STATUS/ASSIGN/UNBIND/ACK 下行帧。
 #include "LoraLink.h"
 
 #include <ScoreProtocol.h>

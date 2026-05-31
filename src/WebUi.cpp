@@ -1,3 +1,5 @@
+// 服务端 Web 页面和 HTTP 路由实现。
+// 负责启动 WiFi AP、渲染 /score 显示页和 /control 控制页，并处理网页表单提交。
 #include "WebUi.h"
 
 #include <WebServer.h>
@@ -57,12 +59,12 @@ String formatAge(unsigned long lastSeenMs, bool seen) {
     }
     const unsigned long ageMs = millis() - lastSeenMs;
     if (ageMs < 1000UL) {
-        return F("0s");
+        return F("刚刚");
     }
     if (ageMs < 60000UL) {
-        return String(ageMs / 1000UL) + F("s");
+        return String(ageMs / 1000UL) + F("秒前");
     }
-    return String(ageMs / 60000UL) + F("m");
+    return String(ageMs / 60000UL) + F("分钟前");
 }
 
 String formatCountdown(uint32_t seconds) {
@@ -169,6 +171,18 @@ void appendPageEnd(String& page) {
     page += F("</main></body></html>");
 }
 
+void appendControlAutoRefreshScript(String& page) {
+    // 控制页的在线/最后通信时间是服务端渲染出来的静态文本。
+    // 这里用浏览器定时刷新整页，让绑定表、未绑定设备、心跳年龄都能同步更新。
+    // 但用户正在编辑队名或倒计时输入框时跳过刷新，避免输入内容被自动刷新清掉。
+    page += F("<script>");
+    page += F("(function(){");
+    page += F("function editing(){var e=document.activeElement;if(!e)return false;var t=e.tagName;return t==='INPUT'||t==='TEXTAREA'||t==='SELECT';}");
+    page += F("setInterval(function(){if(editing())return;location.reload();},2000);");
+    page += F("}());");
+    page += F("</script>");
+}
+
 void appendRoundSummary(String& page, const WebUiState& state) {
     page += F("<section><h2>当前轮次</h2><div class=\"meta\">");
     page += F("<span class=\"pill\">Round ");
@@ -218,7 +232,7 @@ void appendTeamNameForm(String& page, const WebUiState& state) {
 void appendJudgeTable(String& page, const WebUiState& state, bool includeActions) {
     // includeActions=false 时可作为纯展示表，当前控制页传 true 以显示解绑按钮。
     page += F("<section><h2>裁判状态</h2><table><thead><tr>");
-    page += F("<th>裁判</th><th>设备</th><th>在线</th><th>电量</th><th>本轮</th>");
+    page += F("<th>裁判</th><th>设备</th><th>状态 / 最后通信</th><th>电量</th><th>本轮</th>");
     if (includeActions) {
         page += F("<th>操作</th>");
     }
@@ -287,7 +301,7 @@ void appendUnboundTable(String& page, const WebUiState& state, bool includeActio
         return;
     }
 
-    page += F("<table><thead><tr><th>设备</th><th>在线</th><th>电量</th>");
+    page += F("<table><thead><tr><th>设备</th><th>状态 / 最后通信</th><th>电量</th>");
     if (includeActions) {
         page += F("<th>绑定</th>");
     }
@@ -361,7 +375,7 @@ void handleControlPage() {
 
     String page;
     page.reserve(10000);
-    // 控制页需要导航和表单，autoRefresh=false 防止用户填倒计时/队名时页面刷新。
+    // 控制页不用 meta refresh，改用下面的 JS：没有输入框焦点时自动刷新，有焦点时暂停。
     appendPageStart(page, "Control", false, true);
     page += F("<h1>控制页</h1>");
     appendTeamNameForm(page, state);
@@ -380,6 +394,7 @@ void handleControlPage() {
 
     appendJudgeTable(page, state, true);
     appendUnboundTable(page, state, true);
+    appendControlAutoRefreshScript(page);
     appendPageEnd(page);
     webServer.send(200, "text/html; charset=utf-8", page);
 }

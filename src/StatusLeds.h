@@ -1,3 +1,5 @@
+// 服务端状态灯模块接口。
+// LoRa 模块触发 TX/RX 脉冲，主循环负责周期性更新灯的到期熄灭和工作闪烁。
 #pragma once
 
 #include <Arduino.h>

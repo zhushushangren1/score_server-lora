@@ -1,3 +1,5 @@
+// 服务端状态灯模块实现。
+// 负责电源灯、工作心跳灯、LoRa TX/RX 指示灯的初始化和非阻塞刷新。
 #include "StatusLeds.h"
 
 namespace {

@@ -1,3 +1,5 @@
+// 服务端全局状态和持久化实现。
+// 负责绑定表、未绑定设备、队名、总比分、轮次、提交表、在线状态和倒计时管理。
 #include "ServerState.h"
 
 #include <Preferences.h>

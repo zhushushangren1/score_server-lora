@@ -1,3 +1,5 @@
+// 服务端业务动作接口。
+// 串口命令、Web 控制页和实体按钮都通过这些函数触发同一套业务逻辑。
 #pragma once
 
 #include <Arduino.h>

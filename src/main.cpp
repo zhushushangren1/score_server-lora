@@ -1,3 +1,6 @@
+// 服务端程序入口。
+// 负责初始化串口、NVS 状态、状态灯、LoRa、实体按钮和 Web 控制页，
+// 并在 loop() 中调度 LoRa、HTTP、串口、按钮和状态灯模块。
 #include <Arduino.h>
 
 #include "LoraLink.h"
@@ -32,12 +35,12 @@ void setup() {
 
     setupStatusLeds();    // 初始化电源/工作/TX/RX 四个状态灯。
     setupLoraLink();      // 初始化 E22 UART 和 M0/M1/AUX，进入透明传输模式。
-    setupServerButtons(); // 初始化 GPIO4/GPIO5 实体按钮。
+    setupServerButtons(); // 初始化 GPIO5/GPIO12 实体按钮。
     setupServerWeb();     // 启动 WiFi AP 和 /score、/control HTTP 路由。
 
     Serial.println("E22 UART transparent ready");
     Serial.println("Serial commands: bind <deviceId> client1|2|3 / unbind clientX / list / next-round [seconds] / reset");
-    Serial.println("Buttons: GPIO4 short = next-round, GPIO5 hold 3s = reset");
+    Serial.println("Buttons: GPIO5 short = next-round, GPIO12 hold 3s = reset");
 }
 
 void loop() {
@@ -50,7 +53,7 @@ void loop() {
     // 处理 USB 串口命令，和网页/按钮共用同一套 ServerActions。
     handleSerialCommand();
 
-    // 扫描服务端实体按钮：GPIO4 下一轮，GPIO5 长按重置。
+    // 扫描服务端实体按钮：GPIO5 下一轮，GPIO12 长按重置。
     pollServerButtons();
 
     // 驱动工作灯心跳和 TX/RX 瞬时闪烁，全部非阻塞。

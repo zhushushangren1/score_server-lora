@@ -1,3 +1,5 @@
+// 服务端 LoRa UART 链路模块接口。
+// 对业务层隐藏 E22 串口细节，提供读帧和发送服务端协议帧的函数。
 #pragma once
 
 #include <Arduino.h>
