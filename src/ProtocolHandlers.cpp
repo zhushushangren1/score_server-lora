@@ -10,6 +10,8 @@
 
 namespace {
 
+constexpr unsigned long SUBMIT_STATUS_FOLLOWUP_DELAY_MS = 80;
+
 void sendCurrentStatus(const String& deviceId, const String& clientId) {
     bool submitted = false;
     const int slot = bindingSlotIndex(clientId);
@@ -18,6 +20,16 @@ void sendCurrentStatus(const String& deviceId, const String& clientId) {
         submitted = true;
     }
     sendStatus(deviceId, clientId, currentRoundId, roundOpen, submitted);
+}
+
+void sendAckWithStatusFollowup(const String& deviceId, const String& clientId,
+                               const String& roundIdText, const String& msgIdText,
+                               const char* status) {
+    sendAck(deviceId, clientId, roundIdText, msgIdText, status);
+    // ACK 是客户端清 pending 的主确认；STATUS 是 ACK 丢包时的兜底确认。
+    // 短暂等待后再发 STATUS，避免两帧过近导致客户端刚完成发射切回接收时漏掉。
+    delay(SUBMIT_STATUS_FOLLOWUP_DELAY_MS);
+    sendCurrentStatus(deviceId, clientId);
 }
 
 void printParsedFrame(const ScoreProtocol::ParsedFrame& frame) {
@@ -186,7 +198,7 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         Serial.print(subRound);
         Serial.print(" != current ");
         Serial.println(currentRoundId);
-        sendAck(subDevice, subClient, subRoundText, subMsgText, "ERR_BAD_ROUND");
+        sendAckWithStatusFollowup(subDevice, subClient, subRoundText, subMsgText, "ERR_BAD_ROUND");
         return;
     }
 
@@ -196,7 +208,7 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         Serial.print("SUBMIT: duplicate msgId=");
         Serial.print(subMsgId);
         Serial.println(", ack only");
-        sendAck(subDevice, subClient, subRoundText, subMsgText, "OK_DUPLICATE");
+        sendAckWithStatusFollowup(subDevice, subClient, subRoundText, subMsgText, "OK_DUPLICATE");
         return;
     }
     if (submission.submitted) {
@@ -204,7 +216,8 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         Serial.print("SUBMIT: ");
         Serial.print(subClient);
         Serial.println(" already submitted this round");
-        sendAck(subDevice, subClient, subRoundText, subMsgText, "ERR_ALREADY_SUBMITTED");
+        sendAckWithStatusFollowup(subDevice, subClient, subRoundText, subMsgText,
+                                  "ERR_ALREADY_SUBMITTED");
         return;
     }
 
@@ -228,6 +241,9 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
     // 先 ACK 客户端，再尝试结算本轮；即使结算打印较慢，也不影响客户端尽快锁定。
     sendAck(subDevice, subClient, subRoundText, subMsgText, "OK");
     applyCompletedRoundScoreIfReady();
+    // ACK 可能因下行瞬时丢包没到客户端；补发 STATUS 让客户端可用 submitted=1 兜底锁定。
+    delay(SUBMIT_STATUS_FOLLOWUP_DELAY_MS);
+    sendCurrentStatus(subDevice, subClient);
     printRoundState();
 }
 
