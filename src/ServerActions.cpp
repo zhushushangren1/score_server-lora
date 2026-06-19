@@ -5,6 +5,33 @@
 #include "LoraLink.h"
 #include "ServerState.h"
 
+namespace {
+
+// STATUS 广播参数：
+// 下一轮/重置后不只发一次 STATUS，而是给每个已绑定裁判重复发送多轮。
+// 这样某个裁判漏掉一帧时，后续重复帧仍能让它解锁或同步 reset 后的轮次。
+constexpr uint8_t STATUS_BROADCAST_REPEAT_COUNT = 5;
+constexpr unsigned long STATUS_BROADCAST_INTERVAL_MS = 160;
+
+bool statusBroadcastActive = false;
+uint8_t statusBroadcastRound = 0;
+uint8_t statusBroadcastSlot = 0;
+unsigned long statusBroadcastNextMs = 0;
+
+void queueStatusBroadcast(const char* reason) {
+    statusBroadcastActive = true;
+    statusBroadcastRound = 0;
+    statusBroadcastSlot = 0;
+    statusBroadcastNextMs = 0;
+
+    Serial.print("status broadcast queued: ");
+    Serial.print(reason);
+    Serial.print(" repeats=");
+    Serial.println(STATUS_BROADCAST_REPEAT_COUNT);
+}
+
+}  // namespace
+
 void handleBindCommand(const String args[], uint8_t argc) {
     if (argc != 2) {
         // bind 必须明确目标设备和裁判槽位；参数缺失时不猜测，避免误绑定。
@@ -135,13 +162,7 @@ void handleNextRoundCommand(uint32_t countdownSeconds) {
         Serial.println("s");
     }
 
-    for (uint8_t i = 0; i < BINDING_SLOT_COUNT; i++) {
-        if (bindings[i].length() > 0) {
-            // 主动向所有已绑定裁判发送 STATUS，让它们尽快解锁进入新一轮。
-            sendStatus(bindings[i], BINDING_SLOT_NAMES[i], currentRoundId, roundOpen,
-                       roundSubmissions[i].submitted);
-        }
-    }
+    queueStatusBroadcast("next-round");
 
     printRoundState();
 }
@@ -151,13 +172,45 @@ void handleResetCommand() {
     resetMatchScores();
     Serial.println("reset: match state cleared (roundId=1, totals=0)");
 
-    for (uint8_t i = 0; i < BINDING_SLOT_COUNT; i++) {
-        if (bindings[i].length() > 0) {
-            // reset 后把 roundId=1/open=true 发给裁判端，避免客户端还锁在旧轮次。
-            sendStatus(bindings[i], BINDING_SLOT_NAMES[i], currentRoundId, roundOpen,
-                       roundSubmissions[i].submitted);
-        }
-    }
+    queueStatusBroadcast("reset");
 
     printRoundState();
+}
+
+void driveStatusBroadcast() {
+    if (!statusBroadcastActive) {
+        return;
+    }
+    if (statusBroadcastNextMs != 0 &&
+        static_cast<long>(millis() - statusBroadcastNextMs) < 0) {
+        return;
+    }
+
+    while (statusBroadcastRound < STATUS_BROADCAST_REPEAT_COUNT) {
+        while (statusBroadcastSlot < BINDING_SLOT_COUNT) {
+            const uint8_t slot = statusBroadcastSlot++;
+            if (bindings[slot].length() == 0) {
+                continue;
+            }
+
+            Serial.print("STATUS broadcast ");
+            Serial.print(statusBroadcastRound + 1);
+            Serial.print("/");
+            Serial.print(STATUS_BROADCAST_REPEAT_COUNT);
+            Serial.print(" -> ");
+            Serial.println(BINDING_SLOT_NAMES[slot]);
+
+            sendStatus(bindings[slot], BINDING_SLOT_NAMES[slot], currentRoundId, roundOpen,
+                       roundSubmissions[slot].submitted);
+            statusBroadcastNextMs = millis() + STATUS_BROADCAST_INTERVAL_MS;
+            return;
+        }
+
+        statusBroadcastSlot = 0;
+        statusBroadcastRound++;
+    }
+
+    statusBroadcastActive = false;
+    statusBroadcastNextMs = 0;
+    Serial.println("status broadcast complete");
 }

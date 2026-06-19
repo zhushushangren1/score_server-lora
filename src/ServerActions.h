@@ -26,3 +26,7 @@ void handleNextRoundCommand(uint32_t countdownSeconds);
 
 // 重置比赛比分状态：总比分归零、轮号回 1、清空本轮提交和倒计时；不清绑定表和队名。
 void handleResetCommand();
+
+// 驱动下一轮/重置后的 STATUS 重复广播队列。
+// 非阻塞；每次到发送间隔只给一个裁判发一帧，避免网页 POST 被 LoRa 发送长时间拖住。
+void driveStatusBroadcast();

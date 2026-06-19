@@ -174,11 +174,15 @@ void appendPageEnd(String& page) {
 void appendControlAutoRefreshScript(String& page) {
     // 控制页的在线/最后通信时间是服务端渲染出来的静态文本。
     // 这里用浏览器定时刷新整页，让绑定表、未绑定设备、心跳年龄都能同步更新。
-    // 但用户正在编辑队名或倒计时输入框时跳过刷新，避免输入内容被自动刷新清掉。
+    // 但用户正在编辑、点击按钮、确认表单或表单提交中时跳过刷新，避免打断下一轮/重置。
     page += F("<script>");
     page += F("(function(){");
-    page += F("function editing(){var e=document.activeElement;if(!e)return false;var t=e.tagName;return t==='INPUT'||t==='TEXTAREA'||t==='SELECT';}");
-    page += F("setInterval(function(){if(editing())return;location.reload();},2000);");
+    page += F("var lastUser=Date.now(),submitting=false;");
+    page += F("function mark(){lastUser=Date.now();}");
+    page += F("['click','keydown','input','focusin','pointerdown'].forEach(function(e){document.addEventListener(e,mark,true);});");
+    page += F("Array.prototype.forEach.call(document.forms,function(f){f.addEventListener('submit',function(){submitting=true;});});");
+    page += F("function editing(){var e=document.activeElement;if(!e)return false;var t=e.tagName;return t==='INPUT'||t==='TEXTAREA'||t==='SELECT'||t==='BUTTON';}");
+    page += F("setInterval(function(){if(submitting||editing()||Date.now()-lastUser<5000)return;location.reload();},2000);");
     page += F("}());");
     page += F("</script>");
 }

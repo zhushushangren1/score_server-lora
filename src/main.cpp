@@ -6,6 +6,7 @@
 #include "LoraLink.h"
 #include "ProtocolHandlers.h"
 #include "SerialConsole.h"
+#include "ServerActions.h"
 #include "ServerButtons.h"
 #include "ServerState.h"
 #include "ServerWeb.h"
@@ -55,6 +56,9 @@ void loop() {
 
     // 扫描服务端实体按钮：GPIO5 下一轮，GPIO12 长按重置。
     pollServerButtons();
+
+    // 驱动下一轮/重置后的 STATUS 重复广播，让裁判端漏包时也能解锁/同步轮次。
+    driveStatusBroadcast();
 
     // 驱动工作灯心跳和 TX/RX 瞬时闪烁，全部非阻塞。
     updateStatusLeds();
