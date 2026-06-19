@@ -95,6 +95,9 @@ void setTeamNames(const String& team0, const String& team1);
 // 清空总比分和当前轮状态，不清绑定表和队名。
 void resetMatchScores();
 
+// 只把红蓝总比分归零并写入 NVS，不修改轮号、倒计时、绑定表或本轮提交状态。
+void resetTotalScores();
+
 // 若所有已绑定裁判都提交，则按计分规则累计到总比分，并把 roundOpen 置为 false。
 // 返回：true=本次调用完成了累计；false=条件不满足或已经累计过。
 bool applyCompletedRoundScoreIfReady();

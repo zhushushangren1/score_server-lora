@@ -223,13 +223,18 @@ void setTeamNames(const String& team0, const String& team1) {
 
 void resetMatchScores() {
     // reset 只清比赛进度和总比分，绑定关系、未绑定设备表、队名都保留。
-    totalScores[0] = 0;
-    totalScores[1] = 0;
+    resetTotalScores();
     currentRoundId = 1;
     roundOpen = true;
     roundScoreApplied = false;
     resetRoundSubmissions();
     stopCountdown();
+}
+
+void resetTotalScores() {
+    // 下一轮可以只重置显示页/控制页的总比分，不影响当前轮号和裁判绑定关系。
+    totalScores[0] = 0;
+    totalScores[1] = 0;
     saveTotalsToNvs();
 }
 

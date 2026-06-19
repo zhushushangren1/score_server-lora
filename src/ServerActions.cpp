@@ -146,6 +146,8 @@ void handleNextRoundCommand() {
 void handleNextRoundCommand(uint32_t countdownSeconds) {
     // 如果当前轮已经满足结算条件，先把轮分计入总比分，再切到下一轮。
     applyCompletedRoundScoreIfReady();
+    // 用户要求下一轮同时重置总比分；这里不调用 resetMatchScores，避免把 roundId 改回 1。
+    resetTotalScores();
     currentRoundId++;
     // 新轮次重新开放收分，并允许下一次 applyCompletedRoundScoreIfReady 结算。
     roundOpen = true;
@@ -156,6 +158,7 @@ void handleNextRoundCommand(uint32_t countdownSeconds) {
 
     Serial.print("next-round: advanced to ");
     Serial.println(currentRoundId);
+    Serial.println("next-round: total scores reset");
     if (countdownSeconds > 0) {
         Serial.print("countdown: ");
         Serial.print(countdownSeconds);
