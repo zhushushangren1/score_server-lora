@@ -138,7 +138,7 @@ void appendPageStart(String& page, const char* title, bool autoRefresh, bool sho
     page += F("<!doctype html><html><head><meta charset=\"utf-8\">");
     page += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
     if (autoRefresh) {
-        // /score 每秒刷新一次，让倒计时和总比分自动更新；/control 不刷新以免打断表单操作。
+        // 保留整页 meta refresh 开关作为兜底；当前动态数据主要由 /live 局部刷新。
         page += F("<meta http-equiv=\"refresh\" content=\"1\">");
     }
     page += F("<title>");
@@ -171,18 +171,28 @@ void appendPageEnd(String& page) {
     page += F("</main></body></html>");
 }
 
-void appendControlAutoRefreshScript(String& page) {
-    // 控制页的在线/最后通信时间是服务端渲染出来的静态文本。
-    // 这里用浏览器定时刷新整页，让绑定表、未绑定设备、心跳年龄都能同步更新。
-    // 但用户正在编辑、点击按钮、确认表单或表单提交中时跳过刷新，避免打断下一轮/重置。
+void appendLiveRefreshScript(String& page, bool controlPage) {
+    // 动态数据通过 /live 局部刷新，不再整页 reload。
+    // /score 只更新比分板；/control 还会更新轮次摘要、裁判表和未绑定设备表。
     page += F("<script>");
     page += F("(function(){");
-    page += F("var lastUser=Date.now(),submitting=false;");
-    page += F("function mark(){lastUser=Date.now();}");
-    page += F("['click','keydown','input','focusin','pointerdown'].forEach(function(e){document.addEventListener(e,mark,true);});");
-    page += F("Array.prototype.forEach.call(document.forms,function(f){f.addEventListener('submit',function(){submitting=true;});});");
-    page += F("function editing(){var e=document.activeElement;if(!e)return false;var t=e.tagName;return t==='INPUT'||t==='TEXTAREA'||t==='SELECT'||t==='BUTTON';}");
-    page += F("setInterval(function(){if(submitting||editing()||Date.now()-lastUser<5000)return;location.reload();},2000);");
+    page += F("var busy=false,lastUser=0,submitting=false;");
+    if (controlPage) {
+        page += F("function mark(){lastUser=Date.now();}");
+        page += F("['pointerdown','click','keydown'].forEach(function(e){document.addEventListener(e,mark,true);});");
+        page += F("document.addEventListener('submit',function(){submitting=true;},true);");
+    }
+    page += F("function set(id,html){var e=document.getElementById(id);if(e)e.innerHTML=html;}");
+    page += F("function refresh(){");
+    if (controlPage) {
+        page += F("if(submitting||Date.now()-lastUser<800)return;");
+    }
+    page += F("if(busy)return;busy=true;fetch('/live',{cache:'no-store'}).then(function(r){return r.text();}).then(function(t){var p=t.split('\\n<!--SPLIT-->\\n');set('scoreboard-live',p[0]||'');");
+    if (controlPage) {
+        page += F("set('round-live',p[1]||'');set('judge-live',p[2]||'');set('unbound-live',p[3]||'');");
+    }
+    page += F("}).catch(function(){}).then(function(){busy=false;});}");
+    page += F("setInterval(refresh,1000);setTimeout(refresh,250);");
     page += F("}());");
     page += F("</script>");
 }
@@ -355,6 +365,24 @@ void appendUnboundTable(String& page, const WebUiState& state, bool includeActio
     page += F("</tbody></table></section>");
 }
 
+void handleLiveFragments() {
+    WebUiState state;
+    loadState(state);
+
+    String page;
+    page.reserve(10000);
+    appendScoreboard(page, state);
+    page += F("\n<!--SPLIT-->\n");
+    appendRoundSummary(page, state);
+    page += F("\n<!--SPLIT-->\n");
+    appendJudgeTable(page, state, true);
+    page += F("\n<!--SPLIT-->\n");
+    appendUnboundTable(page, state, true);
+
+    webServer.sendHeader("Cache-Control", "no-store");
+    webServer.send(200, "text/html; charset=utf-8", page);
+}
+
 void handleRootPage() {
     // 根路径默认进入显示页，手机/大屏打开 AP 后输入 IP 即可看到比分。
     sendRedirect("/score");
@@ -367,8 +395,11 @@ void handleScorePage() {
     String page;
     page.reserve(5500);
     // showHeader=false 是显示页去掉上方导航栏的关键开关。
-    appendPageStart(page, "Score", true, false);
+    appendPageStart(page, "Score", false, false);
+    page += F("<div id=\"scoreboard-live\">");
     appendScoreboard(page, state);
+    page += F("</div>");
+    appendLiveRefreshScript(page, false);
     appendPageEnd(page);
     webServer.send(200, "text/html; charset=utf-8", page);
 }
@@ -383,8 +414,11 @@ void handleControlPage() {
     appendPageStart(page, "Control", false, true);
     page += F("<h1>控制页</h1>");
     appendTeamNameForm(page, state);
+    page += F("<div id=\"scoreboard-live\">");
     appendScoreboard(page, state);
+    page += F("</div><div id=\"round-live\">");
     appendRoundSummary(page, state);
+    page += F("</div>");
 
     page += F("<section><h2>比赛控制</h2>");
     page += F("<form method=\"post\" action=\"/next-round\" onsubmit=\"return confirm('确认进入下一轮并开始倒计时？')\">");
@@ -396,9 +430,12 @@ void handleControlPage() {
     page += F("<button class=\"danger\" type=\"submit\">重置比分</button></form>");
     page += F("</section>");
 
+    page += F("<div id=\"judge-live\">");
     appendJudgeTable(page, state, true);
+    page += F("</div><div id=\"unbound-live\">");
     appendUnboundTable(page, state, true);
-    appendControlAutoRefreshScript(page);
+    page += F("</div>");
+    appendLiveRefreshScript(page, true);
     appendPageEnd(page);
     webServer.send(200, "text/html; charset=utf-8", page);
 }
@@ -501,6 +538,7 @@ void setupWebUi(WebUiStateProvider provider, const WebUiActions& actions) {
     webServer.on("/", HTTP_GET, handleRootPage);
     webServer.on("/score", HTTP_GET, handleScorePage);
     webServer.on("/control", HTTP_GET, handleControlPage);
+    webServer.on("/live", HTTP_GET, handleLiveFragments);
     webServer.on("/bind", HTTP_POST, handleWebBind);
     webServer.on("/unbind", HTTP_POST, handleWebUnbind);
     webServer.on("/next-round", HTTP_POST, handleWebNextRound);
