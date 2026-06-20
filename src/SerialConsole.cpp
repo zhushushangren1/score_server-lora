@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 
+#include "LoraLink.h"
 #include "ServerActions.h"
 
 namespace {
@@ -78,10 +79,13 @@ void handleSerialCommand() {
                 handleNextRoundCommand(seconds);
             } else if (tokens[0] == "reset") {
                 handleResetCommand();
+            } else if (tokens[0] == "lora-debug") {
+                const bool enabled = !(n >= 2 && tokens[1] == "off");
+                setLoraDebugEnabled(enabled);
             } else {
                 Serial.print("Unknown command: ");
                 Serial.println(tokens[0]);
-                Serial.println("Available: bind / unbind / list / next-round [seconds] / reset");
+                Serial.println("Available: bind / unbind / list / next-round [seconds] / reset / lora-debug [on|off]");
             }
 
             continue;

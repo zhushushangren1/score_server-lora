@@ -13,6 +13,13 @@ void setupLoraLink();
 // 返回值：true=读到完整帧；false=当前没有完整帧。该函数非阻塞，适合 loop 高频调用。
 bool readLoraFrame(String& frameText);
 
+// Enable or disable LoRa UART diagnostics printed from updateLoraDebug().
+void setLoraDebugEnabled(bool enabled);
+
+// Print one diagnostic snapshot each second while debug is enabled.
+// The counters help distinguish "no UART bytes" from "bytes received but no newline frame".
+void updateLoraDebug();
+
 // 发送一行已经组好 CRC、并带末尾换行的协议文本。
 // text：通常来自 ScoreProtocol::buildFrame()，会原样写入 Serial1 并同步打印到 USB 调试串口。
 void sendLoraLine(const String& text);

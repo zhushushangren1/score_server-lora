@@ -21,6 +21,11 @@ constexpr uint32_t LORA_UART_BAUD = 9600;
 constexpr size_t LORA_LINE_MAX = 120;
 
 String loraLine;
+bool loraDebugEnabled = false;
+unsigned long lastLoraDebugPrintMs = 0;
+uint32_t loraRawByteCount = 0;
+uint32_t loraFrameCount = 0;
+uint32_t loraOverflowCount = 0;
 
 void waitForLoraReady() {
     const unsigned long start = millis();
@@ -51,6 +56,7 @@ void setupLoraLink() {
 bool readLoraFrame(String& frameText) {
     while (Serial1.available() > 0) {
         const char c = static_cast<char>(Serial1.read());
+        loraRawByteCount++;
         if (c == '\r') {
             // 兼容 CRLF 行尾；协议实际以 '\n' 判断一帧结束。
             continue;
@@ -62,6 +68,7 @@ bool readLoraFrame(String& frameText) {
                 continue;
             }
             pulseRxLed();
+            loraFrameCount++;
             // 到达换行才返回完整帧，frameText 不包含 CR/LF。
             frameText = loraLine;
             loraLine = "";
@@ -73,10 +80,48 @@ bool readLoraFrame(String& frameText) {
         } else {
             // 超长通常来自乱码或缺失换行，清空后等待下一帧重新同步。
             loraLine = "";
+            loraOverflowCount++;
         }
     }
 
     return false;
+}
+
+void setLoraDebugEnabled(bool enabled) {
+    loraDebugEnabled = enabled;
+    lastLoraDebugPrintMs = 0;
+    Serial.print("LoRa debug ");
+    Serial.println(enabled ? "ON" : "OFF");
+}
+
+void updateLoraDebug() {
+    if (!loraDebugEnabled) {
+        return;
+    }
+
+    const unsigned long now = millis();
+    if (now - lastLoraDebugPrintMs < 1000) {
+        return;
+    }
+    lastLoraDebugPrintMs = now;
+
+    Serial.print("LoRa debug: raw=");
+    Serial.print(loraRawByteCount);
+    Serial.print(" frames=");
+    Serial.print(loraFrameCount);
+    Serial.print(" partialLen=");
+    Serial.print(loraLine.length());
+    Serial.print(" overflow=");
+    Serial.print(loraOverflowCount);
+    Serial.print(" avail=");
+    Serial.print(Serial1.available());
+    Serial.print(" AUX=");
+    Serial.print(digitalRead(LORA_AUX_PIN));
+    Serial.print(" M0=");
+    Serial.print(digitalRead(LORA_M0_PIN));
+    Serial.print(" M1=");
+    Serial.print(digitalRead(LORA_M1_PIN));
+    Serial.println();
 }
 
 void sendLoraLine(const String& text) {

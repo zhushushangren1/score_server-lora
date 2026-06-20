@@ -40,13 +40,14 @@ void setup() {
     setupServerWeb();     // 启动 WiFi AP 和 /score、/control HTTP 路由。
 
     Serial.println("E22 UART transparent ready");
-    Serial.println("Serial commands: bind <deviceId> client1|2|3 / unbind clientX / list / next-round [seconds] / reset");
+    Serial.println("Serial commands: bind <deviceId> client1|2|3 / unbind clientX / list / next-round [seconds] / reset / lora-debug [on|off]");
     Serial.println("Buttons: GPIO5 short = next-round, GPIO12 hold 3s = reset");
 }
 
 void loop() {
     // 优先消化 LoRa 收包，避免 E22 UART 缓冲积压导致丢帧。
     handleLoraInput();
+    updateLoraDebug();
 
     // 处理手机/电脑浏览器发来的 HTTP 请求。
     handleServerWebClient();
