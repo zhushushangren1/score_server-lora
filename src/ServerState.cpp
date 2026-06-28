@@ -87,8 +87,34 @@ namespace {
 bool countdownActive = false;
 uint32_t countdownDurationSec = 0;
 unsigned long countdownEndMs = 0;
+ServerEventLogEntry eventLog[MAX_EVENT_LOG_ENTRIES];
+uint8_t eventLogNext = 0;
+uint8_t eventLogCount = 0;
 
 }  // namespace
+
+void appendEventLog(const String& text) {
+    if (text.length() == 0) {
+        return;
+    }
+
+    eventLog[eventLogNext].atMs = millis();
+    eventLog[eventLogNext].text = text;
+    eventLogNext = static_cast<uint8_t>((eventLogNext + 1) % MAX_EVENT_LOG_ENTRIES);
+    if (eventLogCount < MAX_EVENT_LOG_ENTRIES) {
+        eventLogCount++;
+    }
+}
+
+uint8_t copyEventLog(ServerEventLogEntry outEntries[], uint8_t maxEntries) {
+    const uint8_t count = eventLogCount < maxEntries ? eventLogCount : maxEntries;
+    for (uint8_t i = 0; i < count; i++) {
+        const uint8_t idx = static_cast<uint8_t>(
+            (eventLogNext + MAX_EVENT_LOG_ENTRIES - 1 - i) % MAX_EVENT_LOG_ENTRIES);
+        outEntries[i] = eventLog[idx];
+    }
+    return count;
+}
 
 int findUnboundDevice(const String& id) {
     for (uint8_t i = 0; i < MAX_UNBOUND_DEVICES; i++) {
@@ -219,6 +245,7 @@ void setTeamNames(const String& team0, const String& team1) {
     teamNames[0] = team0.length() > 0 ? team0 : String("红方");
     teamNames[1] = team1.length() > 0 ? team1 : String("蓝方");
     saveTeamNamesToNvs();
+    appendEventLog(String("队名更新：") + teamNames[0] + " / " + teamNames[1]);
 }
 
 void resetMatchScores() {
@@ -284,6 +311,8 @@ bool applyCompletedRoundScoreIfReady() {
     Serial.print(teamNames[1]);
     Serial.print("=");
     Serial.println(totalScores[1]);
+    appendEventLog(String("本轮完成：") + teamNames[0] + "=" + String(totalScores[0]) +
+                   " " + teamNames[1] + "=" + String(totalScores[1]));
     return true;
 }
 

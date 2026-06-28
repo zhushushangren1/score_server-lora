@@ -6,6 +6,7 @@
 
 constexpr uint8_t WEB_UI_MAX_JUDGES = 3;
 constexpr uint8_t WEB_UI_MAX_UNBOUND_DEVICES = 6;
+constexpr uint8_t WEB_UI_MAX_EVENT_LOGS = 50;
 
 // Web 层使用的单个裁判显示模型。
 // 该结构只面向页面渲染，不直接持有 ServerState 的数组引用，避免网页层修改业务状态。
@@ -28,6 +29,12 @@ struct WebUiUnboundDevice {
     unsigned long lastSeenMs = 0;
 };
 
+// Web 层使用的服务端事件日志显示模型。
+struct WebUiEventLog {
+    unsigned long atMs = 0;
+    String text;
+};
+
 // Web 页面每次渲染时的一次性状态快照。
 // currentRoundId/roundOpen/submittedCount：比赛当前轮摘要。
 // teamNames/totalScores：显示页核心比分数据。
@@ -45,6 +52,8 @@ struct WebUiState {
     WebUiJudge judges[WEB_UI_MAX_JUDGES];
     uint8_t unboundCount = 0;
     WebUiUnboundDevice unboundDevices[WEB_UI_MAX_UNBOUND_DEVICES];
+    uint8_t eventLogCount = 0;
+    WebUiEventLog eventLogs[WEB_UI_MAX_EVENT_LOGS];
 };
 
 // WebUi 向业务层拉取页面状态的回调。

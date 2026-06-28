@@ -190,6 +190,7 @@ void appendLiveRefreshScript(String& page, bool controlPage) {
     page += F("if(busy)return;busy=true;fetch('/live',{cache:'no-store'}).then(function(r){return r.text();}).then(function(t){var p=t.split('\\n<!--SPLIT-->\\n');set('scoreboard-live',p[0]||'');");
     if (controlPage) {
         page += F("set('round-live',p[1]||'');set('judge-live',p[2]||'');set('unbound-live',p[3]||'');");
+        page += F("set('event-log-live',p[4]||'');");
     }
     page += F("}).catch(function(){}).then(function(){busy=false;});}");
     page += F("setInterval(refresh,1000);setTimeout(refresh,250);");
@@ -365,6 +366,28 @@ void appendUnboundTable(String& page, const WebUiState& state, bool includeActio
     page += F("</tbody></table></section>");
 }
 
+void appendEventLogTable(String& page, const WebUiState& state) {
+    page += F("<section><h2>最近事件</h2>");
+    if (state.eventLogCount == 0) {
+        page += F("<div class=\"empty\">暂无事件</div></section>");
+        return;
+    }
+
+    page += F("<table><thead><tr><th>时间</th><th>事件</th></tr></thead><tbody>");
+    const uint8_t logCount = state.eventLogCount > WEB_UI_MAX_EVENT_LOGS
+        ? WEB_UI_MAX_EVENT_LOGS
+        : state.eventLogCount;
+    for (uint8_t i = 0; i < logCount; i++) {
+        const WebUiEventLog& entry = state.eventLogs[i];
+        page += F("<tr><td><span class=\"muted\">");
+        page += formatAge(entry.atMs, entry.atMs > 0);
+        page += F("</span></td><td>");
+        page += htmlEscape(entry.text);
+        page += F("</td></tr>");
+    }
+    page += F("</tbody></table></section>");
+}
+
 void handleLiveFragments() {
     WebUiState state;
     loadState(state);
@@ -378,6 +401,8 @@ void handleLiveFragments() {
     appendJudgeTable(page, state, true);
     page += F("\n<!--SPLIT-->\n");
     appendUnboundTable(page, state, true);
+    page += F("\n<!--SPLIT-->\n");
+    appendEventLogTable(page, state);
 
     webServer.sendHeader("Cache-Control", "no-store");
     webServer.send(200, "text/html; charset=utf-8", page);
@@ -434,6 +459,8 @@ void handleControlPage() {
     appendJudgeTable(page, state, true);
     page += F("</div><div id=\"unbound-live\">");
     appendUnboundTable(page, state, true);
+    page += F("</div><div id=\"event-log-live\">");
+    appendEventLogTable(page, state);
     page += F("</div>");
     appendLiveRefreshScript(page, true);
     appendPageEnd(page);

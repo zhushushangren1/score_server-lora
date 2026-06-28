@@ -91,6 +91,7 @@ void handleBindCommand(const String args[], uint8_t argc) {
     Serial.print(targetDevice);
     Serial.print(" -> ");
     Serial.println(targetSlotName);
+    appendEventLog(String("绑定裁判：") + targetSlotName + " <- " + targetDevice);
     printBindings();
 }
 
@@ -128,6 +129,7 @@ void handleUnbindCommand(const String args[], uint8_t argc) {
     Serial.print(" (was ");
     Serial.print(deviceId);
     Serial.println(")");
+    appendEventLog(String("解绑裁判：") + args[0] + " (" + deviceId + ")");
     printBindings();
 }
 
@@ -164,6 +166,8 @@ void handleNextRoundCommand(uint32_t countdownSeconds) {
         Serial.print(countdownSeconds);
         Serial.println("s");
     }
+    appendEventLog(String("进入下一轮：Round ") + String(currentRoundId) +
+                   "，倒计时 " + String(countdownSeconds) + " 秒，总比分已重置");
 
     queueStatusBroadcast("next-round");
 
@@ -174,6 +178,7 @@ void handleResetCommand() {
     // 重置比赛状态但保留绑定表和队名，适合一场比赛重新开始。
     resetMatchScores();
     Serial.println("reset: match state cleared (roundId=1, totals=0)");
+    appendEventLog("重置比赛：Round 1，总比分清零");
 
     queueStatusBroadcast("reset");
 

@@ -54,6 +54,13 @@ void buildWebUiState(WebUiState& state) {
         device.lastBattMv = unboundDevices[i].lastBattMv;
         device.lastSeenMs = unboundDevices[i].lastSeenMs;
     }
+
+    ServerEventLogEntry logEntries[WEB_UI_MAX_EVENT_LOGS];
+    state.eventLogCount = copyEventLog(logEntries, WEB_UI_MAX_EVENT_LOGS);
+    for (uint8_t i = 0; i < state.eventLogCount; i++) {
+        state.eventLogs[i].atMs = logEntries[i].atMs;
+        state.eventLogs[i].text = logEntries[i].text;
+    }
 }
 
 void webUiBindAction(const String& deviceId, const String& clientId) {

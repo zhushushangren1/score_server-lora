@@ -68,11 +68,16 @@ void respondToPresence(const String& deviceId, const String& clientId,
             return;
         }
 
+        const bool isNewUnbound = findUnboundDevice(deviceId) < 0;
         if (!upsertUnboundDevice(deviceId, battMv)) {
             // 未绑定表容量有限，满了以后只打印丢弃，不影响已绑定裁判通信。
             Serial.print("Unbound table full, dropped: ");
             Serial.println(deviceId);
+            appendEventLog(String("未绑定设备表已满，丢弃：") + deviceId);
         } else {
+            if (isNewUnbound) {
+                appendEventLog(String("发现未绑定裁判端：") + deviceId);
+            }
             // 每次刷新都打印，便于串口无网页时看到新设备上线。
             printUnboundDevices();
         }
@@ -88,6 +93,7 @@ void respondToPresence(const String& deviceId, const String& clientId,
         Serial.print(": unknown clientId '");
         Serial.print(clientId);
         Serial.println("', sending UNBIND to correct");
+        appendEventLog(String(frameLabel) + " 身份非法：" + deviceId + " -> " + clientId);
         sendUnbind(deviceId);
         return;
     }
@@ -102,6 +108,7 @@ void respondToPresence(const String& deviceId, const String& clientId,
         Serial.print(" but server has '");
         Serial.print(bindings[slot]);
         Serial.println("', sending UNBIND to correct");
+        appendEventLog(String(frameLabel) + " 绑定不匹配：" + deviceId + " claims " + clientId);
         sendUnbind(deviceId);
         return;
     }
@@ -150,6 +157,7 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         Serial.print("SUBMIT: unknown clientId '");
         Serial.print(subClient);
         Serial.println("', sending UNBIND to correct");
+        appendEventLog(String("SUBMIT 身份非法：") + subDevice + " -> " + subClient);
         sendUnbind(subDevice);
         return;
     }
@@ -162,6 +170,7 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         Serial.print(" but server has '");
         Serial.print(bindings[slot]);
         Serial.println("', sending UNBIND to correct");
+        appendEventLog(String("SUBMIT 绑定不匹配：") + subDevice + " claims " + subClient);
         sendUnbind(subDevice);
         return;
     }
@@ -198,6 +207,8 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         Serial.print(subRound);
         Serial.print(" != current ");
         Serial.println(currentRoundId);
+        appendEventLog(String("提交轮次错误：") + subClient + " round " + String(subRound) +
+                       "，当前 Round " + String(currentRoundId));
         sendAckWithStatusFollowup(subDevice, subClient, subRoundText, subMsgText, "ERR_BAD_ROUND");
         return;
     }
@@ -208,6 +219,7 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         Serial.print("SUBMIT: duplicate msgId=");
         Serial.print(subMsgId);
         Serial.println(", ack only");
+        appendEventLog(String("重复提交确认：") + subClient + " msgId=" + String(subMsgId));
         sendAckWithStatusFollowup(subDevice, subClient, subRoundText, subMsgText, "OK_DUPLICATE");
         return;
     }
@@ -216,6 +228,7 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         Serial.print("SUBMIT: ");
         Serial.print(subClient);
         Serial.println(" already submitted this round");
+        appendEventLog(String("重复改分被拒绝：") + subClient + " Round " + String(currentRoundId));
         sendAckWithStatusFollowup(subDevice, subClient, subRoundText, subMsgText,
                                   "ERR_ALREADY_SUBMITTED");
         return;
@@ -237,6 +250,8 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
     Serial.print(red);
     Serial.print(" blue=");
     Serial.println(blue);
+    appendEventLog(String("收到提交：") + subClient + " Round " + String(subRound) +
+                   " 红=" + String(red) + " 蓝=" + String(blue));
 
     // 先 ACK 客户端，再尝试结算本轮；即使结算打印较慢，也不影响客户端尽快锁定。
     sendAck(subDevice, subClient, subRoundText, subMsgText, "OK");
@@ -309,6 +324,7 @@ void handleLoraInput() {
         } else {
             // 乱码、CRC 错误、字段超长、未知消息类型都不会进入业务状态机。
             Serial.println("Invalid protocol frame");
+            appendEventLog("收到无效 LoRa 帧");
         }
     }
 }

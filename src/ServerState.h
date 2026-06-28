@@ -7,6 +7,7 @@
 constexpr uint8_t MAX_UNBOUND_DEVICES = 6;
 constexpr uint8_t BINDING_SLOT_COUNT = 3;
 constexpr uint8_t TEAM_COUNT = 2;
+constexpr uint8_t MAX_EVENT_LOG_ENTRIES = 50;
 
 // 未绑定设备记录。
 // id：裁判端自报的 deviceId，来自 MAC 低 32 位。
@@ -39,6 +40,14 @@ struct JudgeStatus {
     unsigned long lastSeenMs = 0;
 };
 
+// 服务端内存事件日志。
+// atMs：事件发生时的 millis()，用于网页显示“多久前”。
+// text：事件说明，只保存在 RAM，断电或重启后清空。
+struct ServerEventLogEntry {
+    unsigned long atMs = 0;
+    String text;
+};
+
 extern UnboundDevice unboundDevices[MAX_UNBOUND_DEVICES];
 extern const char* const BINDING_SLOT_NAMES[BINDING_SLOT_COUNT];
 
@@ -57,6 +66,13 @@ extern bool roundScoreApplied;
 // 当前轮的裁判提交表和已绑定裁判在线状态表，下标均与 BINDING_SLOT_NAMES/bindings 一致。
 extern PerJudgeSubmission roundSubmissions[BINDING_SLOT_COUNT];
 extern JudgeStatus judgeStatuses[BINDING_SLOT_COUNT];
+
+// 追加一条服务端内存事件日志；超过 50 条后自动覆盖最旧记录。
+void appendEventLog(const String& text);
+
+// 复制最近事件日志到 outEntries，按“最新在前”排列。
+// 返回实际复制条数。
+uint8_t copyEventLog(ServerEventLogEntry outEntries[], uint8_t maxEntries);
 
 // 在未绑定设备表中查找 deviceId。
 // 返回：找到则为数组下标；未找到为 -1。
