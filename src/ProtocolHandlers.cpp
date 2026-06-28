@@ -234,11 +234,8 @@ void handleSubmit(const ScoreProtocol::ParsedFrame& frame) {
         return;
     }
 
-    // 所有校验通过后才写入本轮提交表。
-    submission.submitted = true;
-    submission.lastMsgId = subMsgId;
-    submission.red = red;
-    submission.blue = blue;
+    // 所有校验通过后才写入本轮提交表，并持久化，便于服务端断电后恢复。
+    recordRoundSubmission(static_cast<uint8_t>(slot), subMsgId, red, blue);
 
     Serial.print("SUBMIT accepted: ");
     Serial.print(subClient);

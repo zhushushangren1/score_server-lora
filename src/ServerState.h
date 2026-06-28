@@ -95,7 +95,7 @@ int bindingSlotIndex(const String& name);
 // 查找某个 deviceId 当前绑定在哪个槽位。未绑定返回 -1。
 int findBindingByDevice(const String& id);
 
-// 从 NVS 加载绑定表、队名、总比分。setup() 中调用一次。
+// 从 NVS 加载绑定表、队名、总比分和当前轮状态。setup() 中调用一次。
 void loadBindingsFromNvs();
 
 // 保存单个绑定槽位到 NVS，并同步内存 bindings[]。
@@ -113,6 +113,9 @@ void resetMatchScores();
 
 // 只把红蓝总比分归零并写入 NVS，不修改轮号、倒计时、绑定表或本轮提交状态。
 void resetTotalScores();
+
+// 保存当前轮号、开放状态、结算标记和本轮每个裁判提交到 NVS。
+void saveRoundStateToNvs();
 
 // 若所有已绑定裁判都提交，则按计分规则累计到总比分，并把 roundOpen 置为 false。
 // 返回：true=本次调用完成了累计；false=条件不满足或已经累计过。
@@ -137,6 +140,9 @@ uint8_t countSubmittedJudges();
 
 // 清空当前轮提交表。
 void resetRoundSubmissions();
+
+// 写入或更新当前轮某个裁判的提交，并持久化当前轮状态。
+void recordRoundSubmission(uint8_t slot, unsigned long msgId, int red, int blue);
 
 // 打印当前轮号、开放状态和各裁判提交状态。
 void printRoundState();

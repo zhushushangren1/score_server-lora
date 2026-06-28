@@ -80,6 +80,8 @@ void handleBindCommand(const String args[], uint8_t argc) {
     }
 
     saveBindingSlot(static_cast<uint8_t>(slot), targetDevice);
+    roundSubmissions[slot] = PerJudgeSubmission();
+    saveRoundStateToNvs();
     // 新绑定后在线状态从空开始，等待该裁判端回 ASSIGN_ACK/HEARTBEAT 再显示在线。
     judgeStatuses[slot] = JudgeStatus();
     // 从未绑定表移除，控制页不会再把它列为可绑定设备。
@@ -121,6 +123,8 @@ void handleUnbindCommand(const String args[], uint8_t argc) {
     const String deviceId = bindings[slot];
     // 先清服务端持久化状态，再通知裁判端；即使 UNBIND 丢包，后续心跳也会被服务端纠正。
     saveBindingSlot(static_cast<uint8_t>(slot), String());
+    roundSubmissions[slot] = PerJudgeSubmission();
+    saveRoundStateToNvs();
     judgeStatuses[slot] = JudgeStatus();
     sendUnbind(deviceId);
 
@@ -155,6 +159,7 @@ void handleNextRoundCommand(uint32_t countdownSeconds) {
     roundOpen = true;
     roundScoreApplied = false;
     resetRoundSubmissions();
+    saveRoundStateToNvs();
     // countdownSeconds=0 会停止/不启动倒计时，网页显示 --:--。
     startCountdown(countdownSeconds);
 

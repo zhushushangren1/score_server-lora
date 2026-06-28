@@ -23,6 +23,26 @@ constexpr const char* NVS_TOTAL_KEYS[TEAM_COUNT] = {
     "total0", "total1"
 };
 
+constexpr const char* NVS_ROUND_ID_KEY = "round_id";
+constexpr const char* NVS_ROUND_OPEN_KEY = "round_open";
+constexpr const char* NVS_ROUND_APPLIED_KEY = "round_applied";
+
+const char* const NVS_SUBMITTED_KEYS[BINDING_SLOT_COUNT] = {
+    "sub1", "sub2", "sub3"
+};
+
+const char* const NVS_SUBMIT_MSG_KEYS[BINDING_SLOT_COUNT] = {
+    "msg1", "msg2", "msg3"
+};
+
+const char* const NVS_SUBMIT_RED_KEYS[BINDING_SLOT_COUNT] = {
+    "red1", "red2", "red3"
+};
+
+const char* const NVS_SUBMIT_BLUE_KEYS[BINDING_SLOT_COUNT] = {
+    "blue1", "blue2", "blue3"
+};
+
 Preferences prefs;
 
 int finalScoreFromThree(int a, int b, int c) {
@@ -62,6 +82,37 @@ void saveTotalsToNvs() {
 void saveTeamNamesToNvs() {
     for (uint8_t i = 0; i < TEAM_COUNT; i++) {
         prefs.putString(NVS_TEAM_KEYS[i], teamNames[i]);
+    }
+}
+
+void loadRoundStateFromNvs() {
+    currentRoundId = prefs.getUInt(NVS_ROUND_ID_KEY, 1);
+    if (currentRoundId == 0) {
+        // 轮号从 1 开始；如果 NVS 被写坏，回退到新比赛。
+        currentRoundId = 1;
+    }
+    roundOpen = prefs.getBool(NVS_ROUND_OPEN_KEY, true);
+    roundScoreApplied = prefs.getBool(NVS_ROUND_APPLIED_KEY, false);
+
+    for (uint8_t i = 0; i < BINDING_SLOT_COUNT; i++) {
+        PerJudgeSubmission& submission = roundSubmissions[i];
+        submission.submitted = prefs.getBool(NVS_SUBMITTED_KEYS[i], false);
+        submission.lastMsgId = prefs.getULong(NVS_SUBMIT_MSG_KEYS[i], 0);
+        submission.red = prefs.getInt(NVS_SUBMIT_RED_KEYS[i], 0);
+        submission.blue = prefs.getInt(NVS_SUBMIT_BLUE_KEYS[i], 0);
+
+        if (bindings[i].length() == 0 || !submission.submitted) {
+            // 未绑定或未提交槽位不保留旧分数，避免控制页重启后显示残留。
+            submission.submitted = false;
+            submission.lastMsgId = 0;
+            submission.red = 0;
+            submission.blue = 0;
+        }
+        if (submission.red < 0 || submission.red > 99 ||
+            submission.blue < 0 || submission.blue > 99) {
+            // 分数越界说明 NVS 内容异常，清空该槽位提交。
+            submission = PerJudgeSubmission();
+        }
     }
 }
 
@@ -213,6 +264,7 @@ void loadBindingsFromNvs() {
         teamNames[i] = prefs.getString(NVS_TEAM_KEYS[i], teamNames[i]);
         totalScores[i] = prefs.getInt(NVS_TOTAL_KEYS[i], 0);
     }
+    loadRoundStateFromNvs();
 }
 
 void saveBindingSlot(uint8_t slot, const String& deviceId) {
@@ -256,6 +308,7 @@ void resetMatchScores() {
     roundScoreApplied = false;
     resetRoundSubmissions();
     stopCountdown();
+    saveRoundStateToNvs();
 }
 
 void resetTotalScores() {
@@ -263,6 +316,20 @@ void resetTotalScores() {
     totalScores[0] = 0;
     totalScores[1] = 0;
     saveTotalsToNvs();
+}
+
+void saveRoundStateToNvs() {
+    prefs.putUInt(NVS_ROUND_ID_KEY, currentRoundId);
+    prefs.putBool(NVS_ROUND_OPEN_KEY, roundOpen);
+    prefs.putBool(NVS_ROUND_APPLIED_KEY, roundScoreApplied);
+
+    for (uint8_t i = 0; i < BINDING_SLOT_COUNT; i++) {
+        const PerJudgeSubmission& submission = roundSubmissions[i];
+        prefs.putBool(NVS_SUBMITTED_KEYS[i], submission.submitted);
+        prefs.putULong(NVS_SUBMIT_MSG_KEYS[i], submission.lastMsgId);
+        prefs.putInt(NVS_SUBMIT_RED_KEYS[i], submission.red);
+        prefs.putInt(NVS_SUBMIT_BLUE_KEYS[i], submission.blue);
+    }
 }
 
 bool applyCompletedRoundScoreIfReady() {
@@ -302,6 +369,7 @@ bool applyCompletedRoundScoreIfReady() {
     // 结算后关闭本轮，下一轮由 next-round 按钮/命令显式开启。
     roundOpen = false;
     saveTotalsToNvs();
+    saveRoundStateToNvs();
 
     Serial.print("round complete: total ");
     Serial.print(teamNames[0]);
@@ -384,6 +452,19 @@ void resetRoundSubmissions() {
         // 赋默认构造对象可以一次性清 submitted/msgId/red/blue。
         roundSubmissions[i] = PerJudgeSubmission();
     }
+}
+
+void recordRoundSubmission(uint8_t slot, unsigned long msgId, int red, int blue) {
+    if (slot >= BINDING_SLOT_COUNT) {
+        return;
+    }
+
+    PerJudgeSubmission& submission = roundSubmissions[slot];
+    submission.submitted = true;
+    submission.lastMsgId = msgId;
+    submission.red = red;
+    submission.blue = blue;
+    saveRoundStateToNvs();
 }
 
 void printRoundState() {
