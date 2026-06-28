@@ -1,5 +1,5 @@
 // 服务端 USB 串口调试命令实现。
-// 负责解析 bind、unbind、list、next-round、reset 等现场调试命令。
+// 负责解析 bind、unbind、list、next-round、reset、lora-debug 等现场调试命令。
 #include "SerialConsole.h"
 
 #include <Arduino.h>
